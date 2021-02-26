@@ -10,6 +10,12 @@ ros::Publisher pub("husky/cmd_vel", &msg);
 #include <Servo.h>
 #include <math.h>
 
+
+//initialize limit switches
+#define limitSwitch1 11
+#define limitSwitch2 10
+#define limitSwitch3 9
+
 //Initialize Motors//
 // Define the stepper motors and the pins the will use
 AccelStepper stepper1(1, 2, 5); // (Type:driver, STEP, DIR)
@@ -17,21 +23,24 @@ AccelStepper stepper2(1, 3, 6);
 AccelStepper stepper3(1, 4, 7);
 
 Servo gripperServo;  // create servo object to control a servo
+Servo storageServo;
 
 int stepper1Position, stepper2Position, stepper3Position, stepper4Position;
 
-//these depend on the motor 
+//these depend on the motor
 const float theta1AngleToSteps = 44.444444;
 const float theta2AngleToSteps = 35.555555;
 const float phiAngleToSteps = 10;
 
+//storage breadcrumb counter
+int storedBreadcrumbs = 3;
+int emptyFlag = 0;
 //////////////////////////////////
 
 
 //VARIABLES THAT NEED TO BE SET
 int currentPosition[] = {0.9, 0, 0};
 int StoragePositon[] = {0.9, 0, 0};
-int RestPositon[] = {0.9, 0, 0};
 int PlacementPosition[] = {0.9, 0, 0};
 int L0 = 0.65;
 int L1 = 0.2;
@@ -64,21 +73,29 @@ void setup()
   pinMode(limitSwitch3, INPUT_PULLUP);
 
   // Stepper motors max speed
-  stepper1.setMaxSpeed(4000);
+  stepper1.setMaxSpeed(4688);
   stepper1.setAcceleration(2000);
-  stepper2.setMaxSpeed(4000);
+  stepper2.setMaxSpeed(4688);
   stepper2.setAcceleration(2000);
-  stepper3.setMaxSpeed(4000);
+  stepper3.setMaxSpeed(4688);
   stepper3.setAcceleration(2000);
 
+  //Servos Positioning
   gripperServo.attach(A0, 600, 2500);
   // initial servo value - open gripper
   gripperServo.write(45);
   //open = 45, closed = 100
   delay(1000);
-  data[5] = 100;
+  storageServo.attach(9);
+  storageServo.write(90);  // set servo to no movement
+
+
+
+  homing();
+
+
   //////////////////////////////////
-  
+
 }
 
 
@@ -88,8 +105,14 @@ void loop()
   //Read messages from the xBee
   received = Serial.read();
 
+
   //Code to check signal strength and store in SignalStrength variable
 
+
+  //check if the storage is empty:
+  if (emptyFlag == 1) {
+    Serial.write("Storage is Empty")
+  }
 
   //OPTION 1 - Move forward
   if (received == "start") {
@@ -195,7 +218,7 @@ void RetrieveNode() {
   ControlScara(pick);
   //Code to pickup node with claw
   Close;
-  
+
   //Store the new current position
   currentPosition[0] = xend;
   currentPosition[1] = yend;
@@ -211,28 +234,22 @@ void RetrieveNode() {
   ControlScara(store);
   //Code to let go of node with claw
   Open();
-  
-  //Store the new current position
-  currentPosition[0] = xend;
-  currentPosition[1] = yend;
-  currentPosition[2] = zend;
-  //New end position is the rest position
-  xend = RestPositon[0];
-  yend = RestPositon[1];
-  zend = RestPositon[2];
-  //Calculate path to rest
-  rest = PathPlanning(currentPosition[0], currentPosition[1], currentPosition[2], xend, yend, zend);
 
-  //Code to control the scara to follow the path returned by PathPlanning
-  ControlScara(rest);
-  
+  //Return SCARA to rest position
+  homing();
+
   //Store the new current position
   currentPosition[0] = xend;
   currentPosition[1] = yend;
   currentPosition[2] = zend;
+
+  storedBreadcrumb++;
+  //move node back into the storage container
+  if (storedBreadcrumb < 3) {
+    storageBackward();
+  }
+
 }
-
-
 
 
 //Function to place a node
@@ -242,16 +259,19 @@ void PlaceNode() {
   yend =  StoragePositon[1];//(y position of storage dropp off)
   zend =  StoragePositon[2];//(z position of storage dropp off)
 
-  //Code to make sure next node is ready for pickup - control storage equipment
+  if (storedBreadcrumb < 3) {
+    //Code to make sure next node is ready for pickup - control storage equipment
+    storageForward();
+  }
 
-  Open()
+  Open();
   //Calculate path to storage
   storage = PathPlanning(currentPosition[0], currentPosition[1], currentPosition[2], xend, yend, zend);
 
   //Code to control the scara to follow the path returned by PathPlanning
   ControlScara(storage);
   //Code to pickup node with claw
-  Close()
+  Close();
 
   //Store the new current position
   currentPosition[0] = xend;
@@ -265,59 +285,114 @@ void PlaceNode() {
 
   //Calculate path to place node
   place = PathPlanning(currentPosition[0], currentPosition[1], currentPosition[2], xend, yend, zend);
-  
+
   //Code to control the scara to follow the path returned by PathPlanning
   ControlScara(place);
   //Code to let go of node with claw
   Open();
 
-  //Store the new current position
-  currentPosition[0] = xend;
-  currentPosition[1] = yend;
-  currentPosition[2] = zend;
-  //End position becomes rest location
-  xend = RestPositon[0];
-  yend = RestPositon[1];
-  zend = RestPositon[2];
 
-  //Calculate path to rest position
-  PathPlanning(currentPosition[0], currentPosition[1], currentPosition[2], xend, yend, zend);
-  //Code to control the scara to follow the path returned by PathPlanning
-  ControlScara(rest);
+  //Return SCARA to rest position
+  homing();
 
   //Store the new current position
   currentPosition[0] = xend;
   currentPosition[1] = yend;
   currentPosition[2] = zend;
 
+  //Lower breadcrumb count in storage
+  storedBreadcrumbs--;
 }
 
 //////////////////////////////////
 
-void ControlScara(q){
+void ControlScara(q) {
   s = size(q[0]);
   for (int i = 0; i < s; i++) {
-     //convert the joint angles to steps 
-      stepper1Position = q[0][i] * theta1AngleToSteps;
-      stepper2Position = data[1][i] * theta2AngleToSteps;
-      stepper3Position = data[2][i] * phiAngleToSteps;
-      //move the stepper motors 
-      stepper1.moveTo(stepper1Position);
-      stepper2.moveTo(stepper2Position);
-      stepper3.moveTo(stepper3Position);
-      delay(15);
-
-  }
-  }
-
-void Open {
-    gripperServo.write(45);
+    //convert the joint angles to steps
+    stepper1Position = q[0][i] * theta1AngleToSteps;
+    stepper2Position = data[1][i] * theta2AngleToSteps;
+    stepper3Position = data[2][i] * phiAngleToSteps;
+    //move the stepper motors
+    stepper1.moveTo(stepper1Position);
+    stepper2.moveTo(stepper2Position);
+    stepper3.moveTo(stepper3Position);
     delay(15);
+
+  }
 }
 
+//opening the gripper
+void Open {
+  gripperServo.write(45); 
+  delay(15);
+}
+
+//closing the gripper
 void Close {
-    gripperServo.write(45);
-    delay(15);
+  gripperServo.write(45);
+  delay(15);
+}
+
+//Moving the Breadcrumb Forward in Storage
+void storageForward() {
+  if (storedBreadcrumbs != 0) {
+    storageServo.write(0); //coil turns left
+    delay(1000); //turn for one full rotation
+    storageServo.write(90); // stop turning
+  }
+  //check if breadcrumb storage is empty 
+  else if (storedBreadcrumbs == 0) {
+    emptyFlag = 1; //send flag 
+  }
+}
+
+//Moving the Breadcrumb Backward in Storage
+void storageBackward() {
+  storageServo.write(180); //coil turns right
+  delay(1000); //turn for one full rotation
+  storageServo.write(90); // stop turning
+}
+
+//Returning SCARA to Rest Position on Robot
+void homing() {
+  // Home Stepper 3
+  while (digitalRead(limitSwitch3) != 1) {
+    stepper3.setSpeed(-1000);
+    stepper3.runSpeed();
+    stepper3.setCurrentPosition(-1662); // When limit switch pressed set position to 0 steps
+  }
+  delay(30);
+
+  stepper3.moveTo(0);
+  while (stepper3.currentPosition() != 0) {
+    stepper3.run();
+  }
+
+  // Home Stepper 2
+  while (digitalRead(limitSwitch2) != 1) {
+    stepper2.setSpeed(-1200);
+    stepper2.runSpeed();
+    stepper2.setCurrentPosition(-5420); // When limit switch pressed set position to -5440 steps
+  }
+  delay(30);
+
+  stepper2.moveTo(0);
+  while (stepper2.currentPosition() != 0) {
+    stepper2.run();
+  }
+
+  // Home Stepper 1
+  while (digitalRead(limitSwitch1) != 1) {
+    stepper1.setSpeed(-1100);
+    stepper1.runSpeed();
+    stepper1.setCurrentPosition(-3955); // When limit switch pressed set position to 0 steps
+  }
+  delay(30);
+  stepper1.moveTo(0);
+  while (stepper1.currentPosition() != 0) {
+    stepper1.run();
+  }
 }
 
 //////////////////////////////////
