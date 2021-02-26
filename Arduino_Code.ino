@@ -28,9 +28,9 @@ Servo storageServo;
 int stepper1Position, stepper2Position, stepper3Position, stepper4Position;
 
 //these depend on the motor
-const float theta1AngleToSteps = 44.444444;
-const float theta2AngleToSteps = 35.555555;
-const float phiAngleToSteps = 10;
+const float theta1AngleToSteps = 44.444444; //0.0225 degrees per step
+const float theta2AngleToSteps = 35.555555; //0.028125 degrees per step
+const float zAngleToSteps = 100;   //0.01 degrees per step
 
 //storage breadcrumb counter
 int storedBreadcrumbs = 3;
@@ -41,6 +41,7 @@ int emptyFlag = 0;
 //VARIABLES THAT NEED TO BE SET
 int currentPosition[] = {0.9, 0, 0};
 int StoragePositon[] = {0.9, 0, 0};
+int RestPositon[] = {0.9, 0, 0};
 int PlacementPosition[] = {0.9, 0, 0};
 int L0 = 0.65;
 int L1 = 0.2;
@@ -111,7 +112,7 @@ void loop()
 
   //check if the storage is empty:
   if (emptyFlag == 1) {
-    Serial.write("Storage is Empty")
+    //send signal to xbee saying storage is empty
   }
 
   //OPTION 1 - Move forward
@@ -235,8 +236,19 @@ void RetrieveNode() {
   //Code to let go of node with claw
   Open();
 
-  //Return SCARA to rest position
-  homing();
+  //Store the new current position
+  currentPosition[0] = xend;
+  currentPosition[1] = yend;
+  currentPosition[2] = zend;
+  //New end position is the rest position
+  xend = RestPositon[0];
+  yend = RestPositon[1];
+  zend = RestPositon[2];
+  //Calculate path to rest
+  rest = PathPlanning(currentPosition[0], currentPosition[1], currentPosition[2], xend, yend, zend);
+
+  //Code to control the scara to follow the path returned by PathPlanning
+  ControlScara(rest);
 
   //Store the new current position
   currentPosition[0] = xend;
@@ -250,6 +262,8 @@ void RetrieveNode() {
   }
 
 }
+
+
 
 
 //Function to place a node
@@ -291,9 +305,19 @@ void PlaceNode() {
   //Code to let go of node with claw
   Open();
 
+  //Store the new current position
+  currentPosition[0] = xend;
+  currentPosition[1] = yend;
+  currentPosition[2] = zend;
+  //End position becomes rest location
+  xend = RestPositon[0];
+  yend = RestPositon[1];
+  zend = RestPositon[2];
 
-  //Return SCARA to rest position
-  homing();
+  //Calculate path to rest position
+  PathPlanning(currentPosition[0], currentPosition[1], currentPosition[2], xend, yend, zend);
+  //Code to control the scara to follow the path returned by PathPlanning
+  ControlScara(rest);
 
   //Store the new current position
   currentPosition[0] = xend;
@@ -310,9 +334,9 @@ void ControlScara(q) {
   s = size(q[0]);
   for (int i = 0; i < s; i++) {
     //convert the joint angles to steps
-    stepper1Position = q[0][i] * theta1AngleToSteps;
-    stepper2Position = data[1][i] * theta2AngleToSteps;
-    stepper3Position = data[2][i] * phiAngleToSteps;
+    stepper1Position = q[0][i] * theta1AngleToSteps; /// rotation joint 1 
+    stepper2Position = q[2][i] * theta2AngleToSteps; // prismatic joint 2
+    stepper3Position = q[1][i] * zAngleToSteps; //rotation joint 3
     //move the stepper motors
     stepper1.moveTo(stepper1Position);
     stepper2.moveTo(stepper2Position);
@@ -322,40 +346,37 @@ void ControlScara(q) {
   }
 }
 
-//opening the gripper
 void Open {
-  gripperServo.write(45); 
+  gripperServo.write(45);
   delay(15);
 }
 
-//closing the gripper
 void Close {
   gripperServo.write(45);
   delay(15);
 }
 
-//Moving the Breadcrumb Forward in Storage
 void storageForward() {
   if (storedBreadcrumbs != 0) {
     storageServo.write(0); //coil turns left
     delay(1000); //turn for one full rotation
     storageServo.write(90); // stop turning
   }
-  //check if breadcrumb storage is empty 
   else if (storedBreadcrumbs == 0) {
-    emptyFlag = 1; //send flag 
+    emptyFlag = 1;
   }
 }
 
-//Moving the Breadcrumb Backward in Storage
+
 void storageBackward() {
   storageServo.write(180); //coil turns right
   delay(1000); //turn for one full rotation
   storageServo.write(90); // stop turning
 }
 
-//Returning SCARA to Rest Position on Robot
+
 void homing() {
+
   // Home Stepper 3
   while (digitalRead(limitSwitch3) != 1) {
     stepper3.setSpeed(-1000);
@@ -394,5 +415,12 @@ void homing() {
     stepper1.run();
   }
 }
+
+
+
+
+
+
+
 
 //////////////////////////////////
